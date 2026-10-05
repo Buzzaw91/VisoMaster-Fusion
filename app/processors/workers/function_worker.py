@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+import os
 from typing import TYPE_CHECKING, Any, Dict, Iterator, List, Optional, Tuple
 
 import numpy as np
@@ -44,6 +45,10 @@ class FunctionWorker:
                               so they can request model loading/unloading safely.
         """
         self.mp = models_processor
+        arena_shrink = os.environ.get("VISOMASTER_CUDA_ARENA_SHRINK", "0")
+        if arena_shrink not in ("0", "1"):
+            raise ValueError("VISOMASTER_CUDA_ARENA_SHRINK must be 0 or 1")
+        self._cuda_arena_shrink = arena_shrink == "1"
 
         # --- Granular Locking ---
         self._session_locks: dict[int, threading.RLock] = {}
@@ -126,7 +131,23 @@ class FunctionWorker:
             # 3. INFERENCE AND CORRECT POST-SYNC (Inside the session lock)
             with session_lock:
                 # Execute ONNX Runtime / TensorRT.
-                session.run_with_iobinding(io_binding)
+                if (
+                    self._cuda_arena_shrink
+                    and self.mp.device_type == "cuda"
+                    and "CUDAExecutionProvider" in session.get_providers()
+                ):
+                    # Experimental cloud diagnostic: release unused ORT arena
+                    # regions after a run without unloading models or changing
+                    # native inference, precision, locks or synchronization.
+                    import onnxruntime as ort
+
+                    run_options = ort.RunOptions()
+                    run_options.add_run_config_entry(
+                        "memory.enable_memory_arena_shrinkage", f"gpu:{self.mp.gpu_id}"
+                    )
+                    session.run_with_iobinding(io_binding, run_options)
+                else:
+                    session.run_with_iobinding(io_binding)
 
                 # 4. POST-INFERENCE SYNC (MUST BE INSIDE BOTH LOCKS)
                 # We use ORT's native synchronization instead of PyTorch's stream sync.

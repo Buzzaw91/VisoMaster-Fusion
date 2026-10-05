@@ -5,6 +5,11 @@ import subprocess
 from typing import Dict, Any, Optional, Mapping, Tuple, List
 import numpy
 
+from app.processors.video_utils.encoder_policy import (
+    sdr_encoder_arguments,
+    sdr_encoder_settings,
+)
+
 
 class FFmpegEncoder:
     """
@@ -16,6 +21,8 @@ class FFmpegEncoder:
     def __init__(self) -> None:
         self.recording_sp: Optional[subprocess.Popen] = None
         self.frames_written: int = 0
+        self.last_exit_code: Optional[int] = None
+        self.last_close_succeeded: bool = False
         self._source_metrics_cache: Dict[str, Dict[str, Any]] = {}
 
     @staticmethod
@@ -317,34 +324,19 @@ class FFmpegEncoder:
                 ]
             )
         else:
-            args.extend(
-                [
-                    "-c:v",
-                    "hevc_nvenc",
-                    "-preset",
-                    str(control.get("FFPresetsSDRSelection", "p4")),
-                    "-profile:v",
-                    "main10",
-                    "-cq",
-                    str(ffquality),
-                    "-pix_fmt",
-                    "yuv420p10le",
-                    "-colorspace",
-                    "rgb",
-                    "-color_primaries",
-                    "bt709",
-                    "-color_trc",
-                    "bt709",
-                    "-spatial-aq",
-                    str(int(control.get("FFSpatialAQToggle", 0))),
-                    "-temporal-aq",
-                    str(int(control.get("FFTemporalAQToggle", 0))),
-                    "-tier",
-                    "high",
-                    "-tag:v",
-                    "hvc1",
-                ]
-            )
+            try:
+                encoder, x265_preset = sdr_encoder_settings()
+                args.extend(sdr_encoder_arguments(control, ffquality))
+            except ValueError as exc:
+                print(f"[ERROR] Invalid SDR encoder configuration: {exc}")
+                return False
+            if encoder == "libx265":
+                print(
+                    f"[INFO] SDR CPU encoding: libx265, preset={x265_preset}, "
+                    f"CRF={ffquality}. Native NVENC presets/AQ controls do not apply."
+                )
+            else:
+                print(f"[INFO] SDR GPU encoding: hevc_nvenc, CQ={ffquality}.")
 
         target_matrix = "bt2020nc" if control.get("HDREncodeToggle") else "bt709"
         scale_params = f"in_range=pc:out_range=tv:out_color_matrix={target_matrix}"
@@ -366,6 +358,8 @@ class FFmpegEncoder:
                 args, stdin=subprocess.PIPE, bufsize=-1
             )
             self.frames_written = 0
+            self.last_exit_code = None
+            self.last_close_succeeded = False
             return True
         except FileNotFoundError:
             print(
@@ -392,10 +386,12 @@ class FFmpegEncoder:
                 return False
         return False
 
-    def close_process(self, timeout: int = 120) -> None:
+    def close_process(self, timeout: int = 120) -> bool:
         """Safely closes the stdin pipe and waits for the FFmpeg process to finalize."""
         if not self.recording_sp:
-            return
+            return self.last_close_succeeded
+
+        clean_shutdown = True
 
         # 1. Graceful Shutdown Request (Send EOF via stdin)
         if self.recording_sp.stdin and not self.recording_sp.stdin.closed:
@@ -410,6 +406,7 @@ class FFmpegEncoder:
             # Crucial for 4K/8K/VR180 where I/O flushing takes time.
             self.recording_sp.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
+            clean_shutdown = False
             print(
                 f"[WARN] FFmpeg subprocess timed out after {timeout}s. Attempting graceful terminate..."
             )
@@ -428,9 +425,18 @@ class FFmpegEncoder:
                 self.recording_sp.kill()
                 self.recording_sp.wait()
         except Exception as e:
+            clean_shutdown = False
             print(f"[ERROR] Error waiting for FFmpeg subprocess: {e}")
 
+        self.last_exit_code = self.recording_sp.returncode
         self.recording_sp = None
+        succeeded = clean_shutdown and self.last_exit_code == 0
+        self.last_close_succeeded = succeeded
+        if not succeeded:
+            print(
+                f"[ERROR] FFmpeg did not finalize successfully (exit={self.last_exit_code})."
+            )
+        return succeeded
 
     def is_running(self) -> bool:
         """Check if the subprocess is currently active."""

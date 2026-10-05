@@ -265,10 +265,12 @@ class FrameWorker(threading.Thread):
 
             while not self.stop_event.is_set():
                 task = None  # Ensure task is defined for 'finally'
+                task_acquired = False
                 try:
                     # Block until a task is available or a poison pill is received
                     # Use a timeout to periodically check the stop_event
                     task = self.frame_queue.get(timeout=1.0)
+                    task_acquired = True
 
                     if task is None:
                         # Poison pill received: Exit the loop
@@ -354,7 +356,8 @@ class FrameWorker(threading.Thread):
 
                 finally:
                     # This block executes *no matter what* (success, exception, or break)
-                    if task is not None and self.frame_queue is not None:
+                    # A retrieved None sentinel is also a queue task.
+                    if task_acquired and self.frame_queue is not None:
                         try:
                             self.frame_queue.task_done()
                         except ValueError:

@@ -24,6 +24,7 @@ from app.ui.widgets.actions import filter_actions
 from app.ui.widgets import ui_workers
 from app.helpers.typing_helper import ParametersTypes, MarkerTypes
 import app.helpers.miscellaneous as misc_helpers
+from app.helpers.atomic_io import atomic_write_bytes, atomic_write_json
 
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
@@ -33,18 +34,20 @@ _KV_REGISTRY_LOCK = threading.Lock()
 
 
 def _load_registry(registry_path: Path) -> Dict[str, List[str]]:
-    """
-    Loads the KV map registry safely.
-    Returns an empty dictionary if the file is missing or corrupted.
-    """
-    if not registry_path.exists():
-        return {}
+    """Read the registry without silently overwriting corrupt or unreadable data."""
     try:
         with open(registry_path, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except (json.JSONDecodeError, IOError) as e:
-        print(f"[WARN] Failed to read KV registry (might be corrupted), resetting: {e}")
+            registry = json.load(f)
+    except FileNotFoundError:
         return {}
+    if not isinstance(registry, dict) or any(
+        not isinstance(filename, str)
+        or not isinstance(parents, list)
+        or any(not isinstance(parent, str) for parent in parents)
+        for filename, parents in registry.items()
+    ):
+        raise ValueError(f"Invalid K/V registry schema: {registry_path}")
+    return registry
 
 
 def _update_registry(
@@ -87,11 +90,7 @@ def _update_registry(
 
         # Write back to disk only if changes were made
         if registry_modified:
-            try:
-                with open(registry_path, "w", encoding="utf-8") as f:
-                    json.dump(registry, f, indent=4)
-            except IOError as e:
-                print(f"[ERROR] Failed to write KV registry to {registry_path}: {e}")
+            atomic_write_json(registry_path, registry)
 
 
 def _save_hashed_kv_payload(
@@ -99,11 +98,13 @@ def _save_hashed_kv_payload(
     payload: dict,
     sub_folder: str = "reference_kv_data",
     parent_file_paths: Optional[Union[str, List[str]]] = None,
+    *,
+    raise_on_error: bool = False,
 ) -> Optional[str]:
     """
-    Serializes a K/V map payload, computes its SHA-256 hash, and saves it to disk.
-    Prevents duplicates by only saving if the hash-based file doesn't exist.
-    Registers multiple dependencies (e.g., workspace JSON and source image) in a central JSON manifest.
+    Serialize a K/V payload and publish its bytes atomically under their SHA-256 hash.
+    Verify existing files before deduplication and register all parent dependencies.
+    Existing callers may request None on failure; persistent saves require exceptions.
     """
     try:
         # 1. Serialize payload to memory to compute the hash safely without disk I/O
@@ -120,15 +121,21 @@ def _save_hashed_kv_payload(
 
         kv_map_file = kv_data_dir / f"kv_{payload_hash}.pt"
 
-        # 4. Only write to disk if the file doesn't already exist (Deduplication)
-        if not kv_map_file.exists():
-            with open(kv_map_file, "wb") as f:
-                f.write(buffer_bytes)
-            print(f"[INFO] Saved new K/V map: {kv_map_file.name}")
+        # This pinned format hashes the same BytesIO bytes that it writes.
+        # Validate them directly; loading and reserializing tensors can alter
+        # storage/device metadata and does not reproduce this filename hash.
+        existing_hash = None
+        if kv_map_file.exists():
+            digest = hashlib.sha256()
+            with open(kv_map_file, "rb") as saved_file:
+                for chunk in iter(lambda: saved_file.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            existing_hash = digest.hexdigest()
+        if existing_hash != payload_hash:
+            atomic_write_bytes(kv_map_file, buffer_bytes)
+            print(f"[INFO] Saved verified K/V map: {kv_map_file.name}")
         else:
-            print(
-                f"[INFO] K/V map {kv_map_file.name} already exists. Skipping disk write."
-            )
+            print(f"[INFO] Verified existing K/V map: {kv_map_file.name}")
 
         # 5. Update the central registry (Reference Counting)
         if parent_file_paths:
@@ -140,6 +147,8 @@ def _save_hashed_kv_payload(
 
     except Exception as e:
         print(f"[ERROR] Failed to hash and save K/V map payload: {e}")
+        if raise_on_error:
+            raise
         return None
 
 
@@ -466,11 +475,16 @@ def save_embeddings_to_file(main_window: "MainWindow", save_as=False):
                     payload,
                     "reference_kv_data",
                     parent_file_paths=str(embedding_filename),
+                    raise_on_error=True,
                 )
             except Exception as e:
-                print(
-                    f"[ERROR] Error saving hashed K/V map for embedding {embedding_id}: {e}"
+                common_widget_actions.create_and_show_messagebox(
+                    main_window,
+                    "Save Error",
+                    f"Unable to save required K/V map for embedding {embedding_id}: {e}",
+                    main_window,
                 )
+                return
 
         embeddings_list.append(
             {
@@ -482,22 +496,20 @@ def save_embeddings_to_file(main_window: "MainWindow", save_as=False):
             }
         )
 
-    # Save to file
-    if embedding_filename:
-        with open(embedding_filename, "w", encoding="utf-8") as embed_file:
-            embeddings_as_json = json.dumps(
-                embeddings_list, indent=4
-            )  # Save with indentation for readability
-            embed_file.write(embeddings_as_json)
-
-            # Show a confirmation message
-            common_widget_actions.create_and_show_toast_message(
-                main_window,
-                "Embeddings Saved",
-                f"Saved Embeddings to file: {embedding_filename}",
-            )
-
-        main_window.loaded_embedding_filename = embedding_filename
+    # Publish only after every required reference has been saved.
+    try:
+        atomic_write_json(embedding_filename, embeddings_list)
+    except Exception as e:
+        common_widget_actions.create_and_show_messagebox(
+            main_window, "Save Error", f"Failed to save embeddings:\n{e}", main_window
+        )
+        return
+    common_widget_actions.create_and_show_toast_message(
+        main_window,
+        "Embeddings Saved",
+        f"Saved Embeddings to file: {embedding_filename}",
+    )
+    main_window.loaded_embedding_filename = embedding_filename
 
 
 # This method is used to convert the data type of Parameters Dict
@@ -1216,16 +1228,43 @@ def load_saved_workspace(
 
 def save_current_workspace(
     main_window: "MainWindow", data_filename: str | Path | bool = False
-):
-    # Prompt for filename FIRST so we can use it for the registry and avoid useless work if cancelled
+) -> bool:
+    """Save all required references before publishing the workspace JSON."""
     if data_filename is False:
         dialog_filename, _ = QtWidgets.QFileDialog.getSaveFileName(
             main_window, filter="JSON (*.json)"
         )
         if not dialog_filename:
-            return  # User cancelled the save operation
+            return False
         data_filename = dialog_filename
+    if isinstance(data_filename, bool) or not data_filename:
+        return False
 
+    try:
+        _save_current_workspace(main_window, data_filename)
+    except Exception as e:
+        print(f"[ERROR] Failed to save workspace {data_filename}: {e}")
+        common_widget_actions.create_and_show_messagebox(
+            main_window,
+            "Save Error",
+            f"Failed to save workspace:\n{e}\n\n"
+            "Keep Fusion open and save again after correcting the problem.",
+            main_window,
+        )
+        return False
+
+    if str(data_filename).endswith("last_workspace.json"):
+        print(f"[INFO] Last workspace saved to: {data_filename}")
+    else:
+        common_widget_actions.create_and_show_toast_message(
+            main_window,
+            "Workspace Saved",
+            f"Saved Workspace to file: {data_filename}",
+        )
+    return True
+
+
+def _save_current_workspace(main_window: "MainWindow", data_filename: str | Path):
     resolved_parent_path = str(data_filename)
 
     target_faces_data = {}
@@ -1340,11 +1379,12 @@ def save_current_workspace(
                         resolved_parent_path,
                         str(input_face.media_path),
                     ],
+                    raise_on_error=True,
                 )
             except Exception as e:
-                print(
-                    f"[ERROR] Error saving hashed K/V map for input face {input_face.face_id}: {e}"
-                )
+                raise RuntimeError(
+                    f"Unable to save required K/V map for input face {face_id}: {e}"
+                ) from e
 
         input_faces_data[face_id] = {
             "media_path": input_face.media_path,
@@ -1396,11 +1436,12 @@ def save_current_workspace(
                     payload,
                     "reference_kv_data",
                     parent_file_paths=resolved_parent_path,
+                    raise_on_error=True,
                 )
             except Exception as e:
-                print(
-                    f"[ERROR] Error saving hashed K/V map for embedding {embedding_id}: {e}"
-                )
+                raise RuntimeError(
+                    f"Unable to save required K/V map for embedding {embedding_id}: {e}"
+                ) from e
 
         embeddings_data[embedding_id] = {
             "embedding_name": embedding_button.embedding_name,
@@ -1479,33 +1520,7 @@ def save_current_workspace(
         "window_state_data": window_state_data,
     }
 
-    if data_filename:
-        try:
-            with open(data_filename, "w", encoding="utf-8") as data_file:
-                data_as_json = json.dumps(
-                    data, indent=4
-                )  # Save with indentation for readability
-                data_file.write(data_as_json)
-            if str(data_filename).endswith("last_workspace.json"):
-                print(f"[INFO] Last workspace saved to: {data_filename}")
-            else:
-                common_widget_actions.create_and_show_toast_message(
-                    main_window,
-                    "Workspace Saved",
-                    f"Saved Workspace to file: {data_filename}",
-                )
-        except Exception as e:
-            print(f"[ERROR] Failed to save workspace {data_filename}: {e}")
-            if not (
-                isinstance(data_filename, str)
-                and data_filename.endswith("last_workspace.json")
-            ):  # Don't show error for auto-save
-                common_widget_actions.create_and_show_messagebox(
-                    main_window,
-                    "Save Error",
-                    f"Failed to save workspace:\n{e}",
-                    main_window,
-                )
+    atomic_write_json(data_filename, data)
 
 
 def save_current_job(main_window: "MainWindow"):
@@ -1577,11 +1592,16 @@ def save_current_job(main_window: "MainWindow"):
                         resolved_parent_path,
                         str(input_face.media_path),
                     ],
+                    raise_on_error=True,
                 )
             except Exception as e:
-                print(
-                    f"[ERROR] Error saving hashed K/V map for input face {input_face.face_id}: {e}"
+                common_widget_actions.create_and_show_messagebox(
+                    main_window,
+                    "Save Job Error",
+                    f"Unable to save required K/V map for input face {face_id}: {e}",
+                    main_window,
                 )
+                return
 
         input_faces_data[face_id] = {
             "media_path": input_face.media_path,
@@ -1610,9 +1630,16 @@ def save_current_job(main_window: "MainWindow"):
                     payload,
                     "reference_kv_data",
                     parent_file_paths=resolved_parent_path,
+                    raise_on_error=True,
                 )
             except Exception as e:
-                print(f"[ERROR] Error saving hashed K/V map for embedding {eid}: {e}")
+                common_widget_actions.create_and_show_messagebox(
+                    main_window,
+                    "Save Job Error",
+                    f"Unable to save required K/V map for embedding {eid}: {e}",
+                    main_window,
+                )
+                return
 
         embeddings_data[eid] = {
             "name": emb.embedding_name,
@@ -1710,8 +1737,7 @@ def save_current_job(main_window: "MainWindow"):
 
     # Save the job file
     try:
-        with open(save_path, "w", encoding="utf-8") as f:
-            json.dump(job_data, f, indent=4)
+        atomic_write_json(save_path, job_data)
         common_widget_actions.create_and_show_toast_message(
             main_window, "Job Saved", f"Job '{job_name}' saved successfully."
         )
@@ -1739,8 +1765,17 @@ def purge_unused_kv_maps(main_window: "MainWindow"):
     kv_data_dir = main_window.project_root_path / "model_assets" / "reference_kv_data"
 
     # 1. Load registry safely, releasing lock immediately for UI interaction
-    with _KV_REGISTRY_LOCK:
-        registry = _load_registry(registry_path)
+    try:
+        with _KV_REGISTRY_LOCK:
+            registry = _load_registry(registry_path)
+    except Exception as e:
+        common_widget_actions.create_and_show_messagebox(
+            main_window,
+            "Storage Purge Error",
+            f"Unable to read K/V registry:\n{e}",
+            main_window,
+        )
+        return
 
     # 2. Extract unique parent file paths
     unique_parent_paths = set()
@@ -1828,10 +1863,16 @@ def purge_unused_kv_maps(main_window: "MainWindow"):
     if registry_modified:
         with _KV_REGISTRY_LOCK:
             try:
-                with open(registry_path, "w", encoding="utf-8") as f:
-                    json.dump(registry, f, indent=4)
-            except IOError as e:
+                atomic_write_json(registry_path, registry)
+            except Exception as e:
                 print(f"[ERROR] Failed to write updated KV registry: {e}")
+                common_widget_actions.create_and_show_messagebox(
+                    main_window,
+                    "Storage Purge Error",
+                    f"Failed to save updated K/V registry:\n{e}",
+                    main_window,
+                )
+                return
 
     # 7. Final Notification
     total_deleted = files_deleted_count + legacy_files_deleted

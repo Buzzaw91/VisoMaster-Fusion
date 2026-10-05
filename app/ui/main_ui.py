@@ -1138,17 +1138,28 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         print("[INFO] MainWindow: closeEvent called.")
 
         self.video_processor.stop_processing()
-        list_view_actions.clear_stop_loading_input_media(self)
-        list_view_actions.clear_stop_loading_target_media(self)
+        list_view_actions.clear_stop_loading_input_media(self, clear_list=False)
+        list_view_actions.clear_stop_loading_target_media(self, clear_list=False)
 
         if self.quit_without_saving:
             print("[INFO] MainWindow: quitting without saving the workspace.")
         else:
-            save_load_actions.save_current_workspace(
-                self, str(self.last_workspace_path)
-            )
+            try:
+                saved = save_load_actions.save_current_workspace(
+                    self, str(self.last_workspace_path)
+                )
+            except Exception as e:
+                QtWidgets.QMessageBox.critical(
+                    self, "Save Error", f"Failed to save workspace before closing:\n{e}"
+                )
+                saved = False
+            if not saved:
+                print(
+                    "[ERROR] MainWindow: close cancelled because workspace save failed."
+                )
+                event.ignore()
+                return
         self.video_processor.join_and_clear_threads()
-        # Optionally handle the event if needed
         event.accept()
 
     def load_last_workspace(self) -> None:

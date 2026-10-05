@@ -337,7 +337,7 @@ def _make_finalize_default_style_recording_dummy(
         _stop_recording_ffmpeg_input_stream=lambda: None,
         media_capture=None,
         recording_sp=None,
-        encoder=SimpleNamespace(is_running=lambda: True, close_process=lambda: None),
+        encoder=SimpleNamespace(is_running=lambda: True, close_process=lambda: True),
         _log_hevc_thumbnail_hint_once=lambda: None,
         # --- recording / timing state ---
         recording=True,
@@ -554,7 +554,7 @@ def _make_finalize_segment_concatenation_dummy(
 
     dummy = SimpleNamespace(
         recording_sp=None,
-        encoder=SimpleNamespace(is_running=lambda: False, close_process=lambda: None),
+        encoder=SimpleNamespace(is_running=lambda: False, close_process=lambda: True),
         current_segment_index=1,
         triggered_by_job_manager=False,
         processing=True,

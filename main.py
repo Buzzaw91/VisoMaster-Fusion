@@ -5,6 +5,12 @@ import traceback
 from datetime import datetime
 from pathlib import Path
 
+from app.helpers.cloud_instance import acquire_cloud_instance
+
+# Acquire before importing GPU/Qt modules or loading writable native state.
+# Hold the descriptor for process lifetime even if its launcher is interrupted.
+_cloud_instance_lock = acquire_cloud_instance(Path(__file__).resolve().parent)
+
 # --- PyTorch VRAM Optimization ---
 # MUST be set BEFORE importing torch (which occurs during _run_app).
 # Instructs the caching allocator to release unused memory segments back to the CUDA driver.
@@ -14,7 +20,7 @@ from pathlib import Path
 # rebuild, e.g. PYTORCH_CUDA_ALLOC_CONF="max_split_size_mb:512,garbage_collection_threshold:0.8"
 os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "garbage_collection_threshold:0.8")
 
-import torch
+import torch  # noqa: E402 - managed lock and allocator settings precede GPU imports
 
 torch.set_grad_enabled(False)
 
@@ -53,6 +59,7 @@ def _run_app() -> None:
 
     import qdarktheme
     from app.ui.core.proxy_style import ProxyStyle
+    from app.processors.video_utils.encoder_policy import sdr_encoder_settings
 
     parser = argparse.ArgumentParser(description="VisoMaster")
     parser.add_argument(
@@ -76,6 +83,19 @@ def _run_app() -> None:
         )
         app.setStyleSheet(_style)
     window = main_ui.MainWindow(gpu_id=args.gpu_id)
+    encoder, preset = sdr_encoder_settings()
+    if encoder == "libx265":
+        window.setWindowTitle(
+            f"{window.windowTitle()} — SDR CPU encoding (libx265 {preset})"
+        )
+        window.statusBar().showMessage(
+            "SDR export uses CPU libx265. NVENC SDR presets and AQ settings do not apply. "
+            "The quality value is CRF; it is not equivalent to NVENC CQ."
+        )
+    print(
+        f"[INFO] SDR encoder: {encoder}"
+        + (f", preset={preset}" if encoder == "libx265" else "")
+    )
     window.show()
     app.exec()
 

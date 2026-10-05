@@ -49,6 +49,31 @@ if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
 
 
+def _close_recording_encoder(video_processor: "VideoProcessor", context: str) -> bool:
+    """Require a clean encoder exit before any muxing or output publication."""
+    try:
+        if video_processor.encoder.close_process() is True:
+            return True
+        exit_code = getattr(video_processor.encoder, "last_exit_code", None)
+        status = str(exit_code) if exit_code is not None else "unknown or timed out"
+        reason = f"{context}: FFmpeg encoder failed (exit status {status})."
+    except Exception as e:
+        reason = f"{context}: unable to finalize the FFmpeg encoder: {e}"
+
+    print(f"[ERROR] {reason}")
+    video_processor.last_processing_error = reason
+    # The caller performs shutdown. Avoid re-entering stop_processing through
+    # the directly connected fatal-error slot while a finalizer is active.
+    video_processor._fatal_processing_error_latched = True
+    video_processor.fatal_processing_error_signal.emit(reason)
+    video_processor.main_window.display_messagebox_signal.emit(
+        "Recording Error",
+        reason + "\nThe recording was not saved.",
+        video_processor.main_window,
+    )
+    return False
+
+
 class VideoProcessor(QObject):
     """
     Manages all video, image, and webcam processing pipelines.
@@ -1321,10 +1346,9 @@ class VideoProcessor(QObject):
         self.join_and_clear_threads()
         print("[INFO] Worker threads joined.")
 
-        # 5. Stop and cleanup FFmpeg encoder
-        if self.encoder.is_running():
-            print("[INFO] Closing and waiting for active FFmpeg encoder...")
-            self.encoder.close_process()
+        # 5. Close even an encoder that has already exited, so it is reaped.
+        # An explicit abort does not publish its temporary recording.
+        self.encoder.close_process()
 
         # 6. Cleanup temp files based on stopped mode.
         if was_processing_segments:
@@ -2236,6 +2260,8 @@ class VideoProcessor(QObject):
                 self.segment_temp_dir,
                 f"segment_{self.current_segment_index:03d}_synced.mp4",
             )
+            # Audio already follows finite kept-frame ranges. Drain both inputs
+            # so its endpoint cannot truncate copied video packets.
             args = [
                 "ffmpeg",
                 "-hide_banner",
@@ -2253,7 +2279,6 @@ class VideoProcessor(QObject):
                 "0:v:0",
                 "-map",
                 "1:a:0",
-                "-shortest",
                 "-y",
                 remuxed_segment_path,
             ]
@@ -2374,18 +2399,21 @@ class VideoProcessor(QObject):
             self.join_and_clear_threads()
             print("[INFO] Worker threads joined.")
 
-            # 5. Finalize FFmpeg (close stdin, wait for file to be written)
-            if self.encoder.is_running():
-                print("[INFO] Closing FFmpeg encoder...")
-                # VP-29: Mark recording stopped early.
-                self.recording = False
+            # 5. Close and validate even an encoder that exited before EOF.
+            # Mark recording stopped before closing the pipe to stop new writes.
+            self.recording = False
+            if not _close_recording_encoder(self, "Recording failed"):
+                # Reopen the source at the current source-space slider position
+                # so a failed recording still leaves a usable native preview.
+                if self.file_type == "video" and self.media_path:
+                    if self._reopen_video_capture(
+                        self.main_window.videoSeekSlider.value()
+                    ):
+                        self._restore_source_frame_state_after_capture_reopen()
+                return
 
-                # Safely close the pipe and wait for the file to finalize
-                self.encoder.close_process()
-
-                # VP-HEVC-INFO: Notify the user about Windows Explorer thumbnail
-                # support for HEVC outputs. Default codec is hevc_nvenc / libx265.
-                self._log_hevc_thumbnail_hint_once()
+            # Notify about Windows Explorer thumbnail support after a clean exit.
+            self._log_hevc_thumbnail_hint_once()
 
             # 6. Calculate audio segment times.
             self.play_end_time, end_frame_for_calc, _, duration_probed = (
@@ -2578,6 +2606,8 @@ class VideoProcessor(QObject):
                         if not final_audio_path:
                             raise RuntimeError("failed to concatenate segmented audio")
 
+                        # Both inputs are bounded to kept frames. Preserve all
+                        # copied video packets rather than ending at audio EOF.
                         args = [
                             "ffmpeg",
                             "-hide_banner",
@@ -2595,7 +2625,6 @@ class VideoProcessor(QObject):
                             "0:v:0",
                             "-map",
                             "1:a:0",
-                            "-shortest",
                             final_file_path,
                         ]
                     else:
@@ -2751,6 +2780,7 @@ class VideoProcessor(QObject):
             if (
                 self.main_window.control.get("OpenOutputToggle")
                 and not self.triggered_by_job_manager
+                and not getattr(self, "last_processing_error", None)
             ):
                 try:
                     list_view_actions.open_output_media_folder(self.main_window)
@@ -3023,7 +3053,9 @@ class VideoProcessor(QObject):
 
         # Calculate time boundaries for audio extraction mapping
         start_time_sec = start_frame / self.fps if self.fps > 0 else 0.0
-        end_time_sec = end_frame / self.fps if self.fps > 0 else 0.0
+        # Segment endpoints are inclusive. FFmpeg's -to is exclusive; include
+        # the final frame's duration so -shortest does not trim that video frame.
+        end_time_sec = (end_frame + 1) / self.fps if self.fps > 0 else 0.0
 
         success = self.encoder.start_process(
             output_filename=temp_segment_path,
@@ -3137,16 +3169,10 @@ class VideoProcessor(QObject):
         # --- Clear raw frame queue ---
         self._purge_queues_and_buffers()
 
-        # 3. Finalize FFmpeg for this segment
-        if self.encoder.is_running():
-            print(
-                f"[INFO] Closing and waiting for active FFmpeg encoder (segment {segment_num})..."
-            )
-            self.encoder.close_process()
-        else:
-            print(
-                f"[WARN] No active FFmpeg encoder found when stopping segment {segment_num}."
-            )
+        # 3. A non-empty file alone does not prove the encoder succeeded.
+        if not _close_recording_encoder(self, f"Segment {segment_num} failed"):
+            self.stop_processing()
+            return
 
         if self.temp_segment_files and not os.path.exists(self.temp_segment_files[-1]):
             print(
@@ -3171,13 +3197,11 @@ class VideoProcessor(QObject):
                 f"Output will be saved with '_incomplete' suffix. Total skipped frames: {self.total_skipped_frames}."
             )
 
-        # Failsafe: If this is called while an ffmpeg process is still running
-        if self.encoder.is_running():
-            segment_num = self.current_segment_index + 1
-            print(
-                f"[INFO] Finalizing: Stopping active FFmpeg process for segment {segment_num}..."
-            )
-            self.encoder.close_process()
+        # Idempotently check the last segment's exit status before touching an
+        # existing final output. This also reaps an already-exited subprocess.
+        if not _close_recording_encoder(self, "Segment recording failed"):
+            self.stop_processing()
+            return
 
         was_triggered_by_job = self.triggered_by_job_manager
 

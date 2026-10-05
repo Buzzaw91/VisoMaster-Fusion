@@ -1,0 +1,62 @@
+# Operator specification, NOT a verified RunPod API/import schema.
+status: provisional-native-linux-pilot
+image:
+  reference: SET_VERIFIED_PUBLISHED_IMAGE_AT_SHA256_AFTER_VALIDATION
+  platform: linux/amd64
+  source_commit: f2d6f5ebe190b631ee5c8972332083cf7f8a3e72
+compute:
+  deployment_type: Secure Cloud
+  gpu: existing-RTX-4090-pod-first
+  location: retain-existing-network-volume-compatible-location
+  provision_new_resources: false
+storage:
+  network_volume_mount: /workspace
+  fusion_root: /workspace/fusion
+  minimum_free_bytes_is_not_volume_quota: true
+  quota_check: Check actual RunPod volume quota separately; df may report backing-store capacity.
+  quota_bound: Optional FUSION_VOLUME_QUOTA_FREE_GB plus FUSION_VOLUME_QUOTA_CHECKED_AT caps new download reservations using a manual static observation, not dynamic provider authority.
+  runtime_override: FUSION_RUNTIME_ROOT=/opt/fusion-runtime optionally keeps new packages on ephemeral container disk.
+ports:
+  raw_vnc: do-not-expose
+  websockify: do-not-expose
+  default_http: do-not-expose-use-SSH-tunnel
+  xpra_http_audio: do-not-expose-use-SSH-tunnel-to-localhost-6082
+  optional_authenticated_http: 6080
+  ssh_internal_tcp: 22
+  ssh_external: assigned public IP and mapped external port from Connect / Direct TCP Ports
+  ssh_provider_documentation: https://docs.runpod.io/pods/configuration/use-ssh
+environment:
+  NVIDIA_DRIVER_CAPABILITIES: compute,utility,video,graphics,display
+  FUSION_ROOT: /workspace/fusion
+  FUSION_ACCESS_MODE: tunnel
+  FUSION_TRANSPORT: xpra
+  DISPLAY: ':100'
+  FUSION_HTTP_PORT: '6080'
+  FUSION_WEBSOCKIFY_PORT: '6081'
+  FUSION_VNC_PORT: '5901'
+  FUSION_XPRA_PORT: '6082'
+  FUSION_DESKTOP_GEOMETRY: 1920x1080
+  FUSION_GPU_ID: '0'
+  FUSION_MANAGED_SSH: '1'
+  FUSION_SSH_PORT: '22'
+  FUSION_PREFLIGHT_MODE: full
+  FUSION_MODEL_SELECTION: RetinaFace,Inswapper128ArcFace,Inswapper128,FaceLandmark5,FaceLandmark68,FaceLandmark106,GFPGANv1.4,CodeFormer
+  VISOMASTER_CUDA_UNIFIED_STREAM: '1'
+  VISOMASTER_CUDA_ARENA_SHRINK: '1'
+  VISOMASTER_SDR_ENCODER: libx265
+  VISOMASTER_SDR_X265_PRESET: veryfast
+runtime_inputs:
+  optional_public_authentication: Set FUSION_TRANSPORT=novnc FUSION_ACCESS_MODE=public and mount runtime FUSION_HTPASSWD_FILE through an HTTPS proxy. Public Xpra is refused.
+  model_reuse: FUSION_REUSE_MODEL_ROOT points at inventoried existing weights; verify exact hashes before links.
+  model_selection: Defaults to the eight tested native models; explicit FUSION_MODEL_SELECTION=all requires verified quota headroom and reuse inventory before catalog-wide downloads.
+  experimental_manual_pilot: CUDA unified stream and arena shrink enabled together passed the five-minute native profile and short export matrix; thirty-minute stability testing is postponed to manual use. Native code defaults remain disabled.
+  selected_encoding: Explicit CPU libx265 main10 compatibility mode; stock NVENC failed on the supplied pod and is not certified by this pilot.
+  borrowed_pilot_runtime: install.sh --borrow-python /absolute/existing/venv/bin/python never installs into that environment.
+  existing_pod_ssh: Set FUSION_MANAGED_SSH=0 to leave its existing daemon untouched.
+  fresh_image_ssh_public_key: Supply runtime FUSION_SSH_PUBLIC_KEY_FILE or PUBLIC_KEY and expose TCP22; no private/public keys in image/template.
+  compatibility_only_gui_pilot: Explicit FUSION_PREFLIGHT_MODE=imports records GPU/encoder/native functionality as unvalidated.
+acceptance:
+  readiness: actual CUDA/ORT execution, native model inference, native Record, audio, client playback, and recovery still required
+  preview_audio: Xpra3.1.5 shadow and private Pulse16.1 forwarded actual sink playback to Chrome HTML5 MediaSource in an isolated test. Native GUI preview audibility and synchronization still required; noVNC fallback carries no audio.
+  lifecycle: browser disconnect keeps the native process; stopping a pod interrupts unsaved work and active renders
+  single_writer: one validated flock owner per entire fusion root, plus one Fusion process; abnormal exits require explicit inspected recovery

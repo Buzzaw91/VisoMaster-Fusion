@@ -1,0 +1,107 @@
+# PROVISIONAL: upstream application pins with Linux CUDA dependency alignment.
+# A real Linux resolver rejected upstream cuda-toolkit==13.2.1 alongside
+# torch==2.11.0+cu130 (requires cuda-toolkit[cublas]==13.0.2). NVIDIA leaf
+# libraries resolve from native-facing package metadata instead of conflicting
+# upstream snapshot pins. Promote a generated hashed lock only after validation.
+# NOT a complete/resolved Linux artifact lock. No artifact hashes are invented.
+# install.sh --resolve-lock generates a platform-specific hashed receipt on Linux.
+# Torch wheels: https://download.pytorch.org/whl/cu130
+# TensorRT/CUDA candidates: https://pypi.nvidia.com and PyPI; actual origins pending.
+# ORT CUDA 13: exact upstream cp312 Linux artifact; build identity checked against
+# the working native runtime, rather than ambiguous same-version index selection.
+# Remaining pins: PyPI. All transitive dependencies/origins require resolution.
+
+absl-py==2.4.0
+aiohappyeyeballs==2.6.1
+aiohttp==3.13.5
+aiosignal==1.4.0
+antlr4-python3-runtime==4.9.3
+astunparse==1.6.3
+attrs==26.1.0
+certifi==2026.4.22
+charset-normalizer==3.4.7
+colorama==0.4.6
+cuda-toolkit==13.0.2
+darkdetect==0.7.1
+einops==0.8.2
+filelock==3.29.0
+flatbuffers==25.12.19
+frozenlist==1.8.0
+fsspec==2026.4.0
+ftfy==6.3.1
+gast==0.7.0
+google-pasta==0.2.0
+grpcio==1.80.0
+h5py==3.14.0
+idna==3.13
+imageio==2.37.3
+jinja2==3.1.6
+keras==3.14.0
+kornia==0.8.2
+kornia-rs==0.1.11
+lazy-loader==0.5
+libclang==18.1.1
+lightning==2.6.1
+lightning-utilities==0.15.3
+markdown-it-py==4.0.0
+markupsafe==3.0.3
+mdurl==0.1.2
+ml-dtypes==0.5.4
+mpmath==1.3.0
+multidict==6.7.1
+namex==0.1.0
+networkx==3.6.1
+numexpr==2.14.1
+numpy==2.4.4
+omegaconf==2.3.0
+onnx==1.21.0
+onnxruntime-gpu @ https://aiinfra.pkgs.visualstudio.com/2692857e-05ef-43b4-ba9c-ccf1c22c437c/_packaging/22685817-9e91-4967-bafe-94c9843c26a9/pypi/download/onnxruntime-gpu/1.26/onnxruntime_gpu-1.26.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl#sha256=b1fc39ada5067db5ca18c3777a64f3365a6d7d188a12421283787aec4c3e98d1
+onnxsim==0.6.3
+opencv-python==4.13.0.92
+opt-einsum==3.4.0
+optree==0.19.0
+packaging==26.2
+pillow==12.2.0
+propcache==0.4.1
+protobuf==7.34.1
+psutil==7.2.2
+pygments==2.20.0
+pyqt-toast-notification==1.3.3
+# Upstream 2.1.0 declares Python <3.12. The maintained drop-in fork preserves
+# qdarktheme imports and supports this Python 3.12 Linux runtime.
+pyqtdarktheme-fork==2.3.6
+pyside6==6.11.0
+pyside6-addons==6.11.0
+pyside6-essentials==6.11.0
+pytorch-lightning==2.6.1
+pyvirtualcam==0.15.0
+pyyaml==6.0.3
+qdarkstyle==3.2.3
+qtpy==2.4.3
+regex==2026.4.4
+requests==2.33.1
+rich==15.0.0
+scikit-image==0.26.0
+scipy==1.17.1
+send2trash==2.1.0
+setuptools==81.0.0
+shiboken6==6.11.0
+six==1.17.0
+sympy==1.14.0
+tensorflow==2.21.0
+tensorrt-cu13==10.16.1.11
+tensorrt-cu13-bindings==10.16.1.11
+tensorrt-cu13-libs==10.16.1.11
+termcolor==3.3.0
+tifffile==2026.5.2
+torch==2.11.0+cu130
+torchaudio==2.11.0+cu130
+torchmetrics==1.9.0
+torchvision==0.26.0+cu130
+tqdm==4.67.3
+typing-extensions==4.15.0
+urllib3==2.6.3
+wcwidth==0.7.0
+wheel==0.47.0
+wrapt==2.1.2
+yarl==1.23.0
