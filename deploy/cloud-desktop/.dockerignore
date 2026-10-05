@@ -1,0 +1,27 @@
+# Only deployment scripts/configuration belong in this build context.
+**/__pycache__
+**/*.pyc
+**/.DS_Store
+**/.git
+**/.env*
+**/*secret*
+**/*password*
+**/htpasswd*
+**/*.pem
+**/*id_rsa*
+**/*id_ed25519*
+**/*.mp4
+**/*.mov
+**/*.mkv
+**/*.jpg
+**/*.png
+**/*.onnx
+**/*.pth
+**/*.ckpt
+**/*.engine
+**/*.dfm
+**/*.json
+**/results/**
+**/logs/**
+**/receipts/**
+**/tests/**

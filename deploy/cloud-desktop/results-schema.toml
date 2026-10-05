@@ -1,0 +1,111 @@
+schema_version = 1
+description = "Evidence emitted by benchmark.py for the original native Fusion Qt MainWindow and Record pipeline. Runtime JSON is deliberately untracked."
+baseline = "f2d6f5ebe190b631ee5c8972332083cf7f8a3e72"
+
+[runner]
+command = "DISPLAY=:100 XAUTHORITY=/run/fusion-desktop/Xauthority QT_QPA_PLATFORM=xcb /opt/fusion-repro-runtime/venv/bin/python /workspace/fusion-deployment/benchmark.py --app-root /workspace/fusion/source/f2d6f5ebe190b631ee5c8972332083cf7f8a3e72 --project /workspace/fusion/projects/example/workspace.json --profile /workspace/fusion/projects/example/profile.toml --run-dir /workspace/fusion/benchmark-runs/4090-720p-trial1 --repeat 3"
+entrypoint = "Same native MainWindow with an explicitly verified compatibility overlay and the QApplication style from main.py; original button/signal actions drive analysis, seeking, Play and Record. No custom renderer."
+inputs = "An explicit workspace selecting a real video and source faces, exact TOML profile, and already installed/verified model weights. No media or credentials are bundled."
+isolation = "Copy native code, media, JSON, reference KV data and registries into a fresh runtime. Symlink only weights matching the native SHA256 manifest; asset source must be mounted read-only. Free space is checked before copying; no existing data is removed."
+space = "Default reserve 2 GiB. Media/reference copies and recordings need additional space; a nearly full volume can reject a trial safely. TensorRT snapshots are copied only when explicitly supplied."
+cache = "Fresh empty cache unless --cache-snapshot explicitly names a compatible cache. Caches remain available in the run runtime for inspection. Source caches are never cleared."
+display = "Visible DISPLAY is required by default. --offscreen is diagnostic only and has a distinct verdict. No offscreen result proves browser desktop usability."
+timeout = "Per-stage native event timeout plus an independent hard subprocess deadline, including blocked model builds/dialogs. Unexpected native message boxes fail for inspection; no confirmations are auto-accepted."
+
+[verdict]
+passed_native_automation = "All automated native gates, persistence comparisons, actual output metadata, backend execution proof and nvidia-smi sampling passed. Browser/client, visual quality and pod recovery gates remain unmeasured."
+passed_offscreen_diagnostic = "Automated diagnostics passed without a visible desktop. Cannot pass visible desktop, audio-delivery or client gates."
+passed_backend_diagnostic = "Separate --backend-only pass established selected representative native model execution; skips Play/Record and does not establish recording throughput or successful output. Visible/offscreen context is recorded separately."
+passed_untimed_fault_diagnostic = "Explicit disposable native early-EOF, known-skip or missing-frame abort test passed. Injected trials report no throughput. Required missing-frame abort must preserve an existing output and publish no new recording."
+failed = "A missing prerequisite, native error/dialog/timeout, unverifiable provider, incomplete output, audio/frame/duration mismatch or state mismatch prevents passing. Read native.log and native-results.json."
+
+[fields]
+schema_version = "integer"
+status = "verdict enum"
+source = "expected baseline plus actual Git head/diff or verified .fusion-source.json archive manifest and real source-patch receipt. Archive native Python absent from the reviewed manifest is rejected; no Git head is invented for archives."
+profile = "exact requested TOML profile, including provider/precision/threads/streams/SDR-HDR/models/restorers"
+profile_sha256 = "SHA256 of supplied profile file"
+preparation = "original workspace SHA256, isolated paths, copied bytes/reserve, cache state, native model manifest identity, verified weight and media/KV identities"
+native = "native stage timings, analysis, preview, playback, records, persisted effective state and backend execution traces"
+resources = "nvidia-smi total device used memory, GPU name/UUID/driver/capacity/utilization, process RSS and CPU seconds, errors and sampled peak"
+encoder_environment = "Explicit VISOMASTER_SDR_ENCODER / VISOMASTER_SDR_X265_PRESET request, observed native FFmpeg command/selected encoder/exit in each record. Codec metadata alone cannot distinguish NVENC from CPU x265."
+runtime_environment = "Whitelisted LD_LIBRARY_PATH, CUDA visibility/loading and Torch allocator settings plus display/platform; loaded GPU library paths are independently observed in resources. Other environment variables and credentials are not dumped."
+cpu_limits = "Host logical count, process affinity, cgroup CPU quota/period and effective cpuset; record CPU encoder constraints when using the isolated compatibility fallback."
+original_project_unchanged = "true only after post-trial SHA256 comparison"
+unmeasured = "Explicit pending client/network/audio quality/recovery/stability/GPU capacity work"
+rental_hourly_rate = "operator-supplied actual rate, or null; no price is inferred"
+
+[measurements]
+cold_startup = "Python native import + original MainWindow construction/show, before explicit user project load; fresh cache context is recorded."
+project_load = "Native load_saved_workspace action with real media/source import and any model loading it triggers."
+analysis = "Actual native Find Faces button wall time. First-after-project-load is separate from warm repeats; it is not falsely called cold inference because native project loading may already initialize models."
+preview = "Native slider pressed/value/released plus native single_frame_processed signal and actual viewport Paint. Native accepted array identity and scene QPixmap cacheKey associate paints when Qt paints before delivering the queued observer. Raw navigation paints cannot complete a processed preview. Median/p95 use warm measurements only."
+playback = "Distinct local native viewport paint frames and interval statistics. These measure the server GUI surface; browser-delivered cadence/stalls/audio remain manual."
+record = "Original Record button -> processing_started -> processing_stopped, followed by independent ffprobe frame/duration/size/codec/pixel-format/audio validation. Output records frame_delta, exact_frame_count and the one-frame tolerance explicitly; tolerant success cannot establish exact frame preservation. Discovery scans new output files; UI rename text is not trusted."
+ffmpeg_exit = "Observe native encoder Popen references without replacing subprocess calls. Retained references expose real encoder arguments and exit codes after native cleanup. Very short later segments may evade 100ms sampling; final native mux return is not exposed, so output proof plus native.log remains mandatory."
+fps = "Decoded verified output frame count divided by measured native Record elapsed seconds. No synthetic pipeline FPS is reported."
+gpu_memory = "Total device memory from nvidia-smi sampled every 200 ms, including ONNX/TensorRT/Torch/encoder and other GPU processes. Peak is a sampled lower bound, not exact allocator maximum. Stage monotonic timestamps attribute samples, while the full peak includes the separate backend diagnostic pass."
+native_resources = "Observe loaded native model session identities/provider options, active native worker IDs, shared stream count and Python/OS thread counts after stages. Counters do not establish a causal memory leak mechanism."
+stability_safety = "Optional --max-native-gpu-percent fails on the first sampled own-process threshold crossing, persists evidence and stops only the benchmark child. Total-device memory remains separately sampled; no cache eviction hides growth."
+torch_memory = "Allocated/reserved and lifetime peak allocated/reserved bytes observed after stage/Record wall time capture. No peak reset, synchronization or cache eviction is introduced. Torch excludes ORT arenas and unrelated processes; compare against nvidia-smi rather than infer a leak from reserved bytes alone."
+interactive_session = "Optional --session-minutes 30 with a longer --timeout runs a bounded native seek/Play loop after normal validation, without extra Records. Each cycle persists progress and allocator observations; an OOM/stall fails instead of claiming 30 minute stability. An operator may write session-extension.json with session_minutes before the initial deadline to extend the same process up to 60 minutes; this extends only duration, records the request hash/time, and requires a sufficient original hard timeout. Browser cadence/audio remain unmeasured."
+backend = "Untimed sys.setprofile observation reads actual ORT run_with_iobinding RunOptions arguments and memory.enable_memory_arena_shrinkage entries without replacing methods; enabled shrink requires observed gpu:N. Session providers/options/input types plus actual executed ORT node providers from a separate native model profiling pass and CUDA events from a native Torch trace. Available providers alone cannot pass."
+precision = "native-model-policy only at this baseline: native FP16-safe model whitelist and graph input types. No global precision override is invented."
+out_of_order_probe = "Separate --out-of-order-probe --repeat1 run delays only the penultimate native FrameWorker result until the highest frame emits. Main-thread trace observes actual display_next_frame locals and successful encoder frame-index order; output exact frames/audio are independently checked. This deliberately injected diagnostic never reports throughput and never alters ordinary timed runs."
+fault_probe = "Separate --fault-probe with repeat1. early-eof returns a read failure while an earlier processed worker is held, delegates native tail marking and verifies cursor/order/exact shortened output/audio duration. known-skips uses native dropped_frames from the supplied project. missing-frame suppresses one task's emit while native queue task accounting remains active; the native required-frame abort must preserve --preserve-output hashes and publish no output. All instrumentation and injections are confined to untimed disposable processes."
+fresh_process_restore = "--restore-only loads a previously saved native snapshot in a separate MainWindow process. It preserves saved profile settings, clones external assets, compares every state-signature field after native save and checks original/clone file hashes. Only isolated paths are rebased; no inference/Record performance is claimed."
+persistence = "Native save -> native load -> native save semantic comparison of assignments, parameters/control, markers/ranges, merged embeddings, issues/dropped frames, selected media and reference KV identities. Same-process checks do not prove fresh-process/replacement-pod recovery."
+output_audio = "Audio stream presence and duration matching are required when source audio exists. This is metadata evidence; perceived synchronization and quality require local playback."
+
+[limitations]
+explicit_tensorrt_engine = "At this pinned baseline both TensorRT labels route through ORT TensorRT EP. Actual TRT node evidence is required for either label; no separate explicit engine runner is claimed."
+custom_models = "An existing custom weight outside native models_data.py hash manifest is rejected. Supply a reviewed hash manifest extension before testing DFM/custom models."
+fps_cap = "OutputFpsCapEnableToggle=true is rejected by expected-frame validation; an explicit uncapped profile is required."
+manual = ["Mac browser 30 minute session", "Windows browser 30 minute session", "client delivered playback cadence/stalls", "browser-to-preview latency", "preview audio transport", "visual difficult-interval inspection", "downloaded audio sync", "browser disconnection during >100s Record", "replacement-pod recovery", "minimum 12/16 GiB GPU comparison"]
+
+[example]
+profile_toml = '''
+[profile]
+name = "720p-one-face-native-sdr"
+provider = "CUDA"
+precision = "native-model-policy"
+threads = 2
+streams = 1
+hdr = false
+
+[control]
+DetectorModelSelection = "RetinaFace"
+RecognitionModelSelection = "Inswapper128ArcFace"
+OutputFpsCapEnableToggle = false
+FFPresetsSDRSelection = "p5"
+OpenOutputToggle = false
+
+[parameters]
+SwapModelSelection = "Inswapper128"
+FaceRestorerEnableToggle = false
+FaceRestorerEnable2Toggle = false
+
+[native]
+analysis_frames = [0, 90]
+seek_frames = [0, 90, 180]
+play_seconds = 5
+require_source_audio = true
+require_assignments = true
+require_merged_embedding = true
+require_reference_kv = false
+require_markers = true
+require_segments = true
+# For an unprepared project, enable native merged embedding creation:
+# create_merged_embedding = true
+# merge_source_ids = ["actual-workspace-source-id-1", "actual-workspace-source-id-2"]
+# generate_reference_kv = true  # enable only when the intended denoiser uses it
+# add_parameter_markers = [90]  # leave absent if the workspace already has markers
+# segments = [[0, 89], [120, 209]]  # leave absent when workspace ranges exist
+# expected_width = 1280
+# expected_height = 720
+
+# Existing assignment IDs are preserved. Optionally exercise new assignments:
+# [[assignments]]
+# target_index = 0
+# source_face_ids = ["actual-workspace-source-id-1"]
+'''
