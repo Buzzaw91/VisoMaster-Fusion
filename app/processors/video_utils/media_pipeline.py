@@ -470,8 +470,9 @@ class MediaPipeline(QObject):
                             print(
                                 f"[WARN] Decoder Thread: FFmpeg input stream terminated early at {self.vp.current_frame_number}. Treating as corrupted input."
                             )
-                        with self.state_lock:
-                            self.vp.next_frame_to_display = self.vp.max_frame_number + 1
+                        self._mark_unavailable_tail(
+                            self.vp.current_frame_number, self.vp.max_frame_number
+                        )
                         break
 
                     fn = self.vp.current_frame_number
@@ -489,10 +490,10 @@ class MediaPipeline(QObject):
                                     )
                                 continue
                             else:
+                                self._mark_unavailable_tail(
+                                    fn, self.vp.current_segment_end_frame
+                                )
                                 with self.state_lock:
-                                    self.vp.next_frame_to_display = (
-                                        self.vp.current_segment_end_frame + 1
-                                    )
                                     self.vp.current_frame_number = (
                                         self.vp.current_segment_end_frame + 1
                                     )
@@ -522,10 +523,7 @@ class MediaPipeline(QObject):
                             print(
                                 f"[INFO] Decoder Thread: Read failure near file end (frame={fn}/{self.vp.max_frame_number}), treating as EOF."
                             )
-                            with self.state_lock:
-                                self.vp.next_frame_to_display = (
-                                    self.vp.max_frame_number + 1
-                                )
+                            self._mark_unavailable_tail(fn, self.vp.max_frame_number)
                             break
 
                     self.consecutive_read_errors += 1
@@ -543,8 +541,7 @@ class MediaPipeline(QObject):
                         if not near_eof:
                             self.stopped_by_error_limit = True
 
-                        with self.state_lock:
-                            self.vp.next_frame_to_display = self.vp.max_frame_number + 1
+                        self._mark_unavailable_tail(fn, self.vp.max_frame_number)
 
                         if is_segment_mode:
                             self.vp.is_processing_segments = False
@@ -618,6 +615,13 @@ class MediaPipeline(QObject):
             self.manual_dropped_skip_count += 1
         elif reason == "read_error":
             self.read_error_skip_count += 1
+
+    def _mark_unavailable_tail(self, start_frame: int, end_frame: int) -> None:
+        """Mark only unread tail frames; preserve the buffered consumer cursor."""
+        with self.state_lock:
+            for frame_number in range(start_frame, end_frame + 1):
+                if frame_number not in self.skipped_frames:
+                    self._mark_skipped_frame(frame_number, "tail_eof")
 
     def _detector_loop(self) -> None:
         """
@@ -1094,11 +1098,6 @@ class MediaPipeline(QObject):
             self.vp.tail_pending_stall_start_sec = 0.0
             return False
 
-        pending_tasks = self.vp._safe_unfinished_tasks()
-        if pending_tasks == 0:
-            self.vp.tail_pending_stall_start_sec = 0.0
-            return True
-
         now_sec = time.perf_counter()
         if self.vp.tail_pending_stall_start_sec <= 0.0:
             self.vp.tail_pending_stall_start_sec = now_sec
@@ -1108,6 +1107,24 @@ class MediaPipeline(QObject):
             now_sec - self.vp.tail_pending_stall_start_sec
             >= TAIL_PENDING_STALL_TIMEOUT_SEC
         ):
+            endpoint = (
+                self.vp.current_segment_end_frame
+                if self.vp.is_processing_segments
+                else self.vp.max_frame_number
+            )
+            if endpoint is not None and frame_number_to_display <= endpoint:
+                reason = (
+                    "Processing pipeline did not deliver required frame "
+                    f"{frame_number_to_display} before the tail timeout."
+                )
+                print(f"[ERROR] {reason}")
+                self.vp._handle_fatal_processing_error(reason)
+                self.main_window.display_messagebox_signal.emit(
+                    "Recording Error",
+                    reason + "\nThe recording was not saved.",
+                    self.main_window,
+                )
+                return True
             self.vp.tail_force_finalize_due_to_stall = True
             self.vp.tail_pending_stall_start_sec = 0.0
             print(
@@ -1193,7 +1210,7 @@ class MediaPipeline(QObject):
                         )
                         self.vp.stop_current_segment()
                         return
-                    # If drain is not complete, the loop bypasses this block and safely continues to pull min(self.frames_to_display) below.
+                    # Pending workers/signals still drain in timeline order below.
                 else:
                     if self.vp.recording:
                         if is_drain_complete:
@@ -1273,10 +1290,10 @@ class MediaPipeline(QObject):
             frame = self.webcam_frames_to_display.get()
         else:
             draining_tail = self.is_draining_tail()
-            if draining_tail and self.frames_to_display:
-                frame_number_to_display = min(self.frames_to_display)
-            else:
-                frame_number_to_display = self.vp.next_frame_to_display
+            # Producers can finish while earlier worker results are still in
+            # flight. Drain in timeline order, including the tail; a later ready
+            # frame must not overtake an unfinished frame or its queued signal.
+            frame_number_to_display = self.vp.next_frame_to_display
 
             original_frame = frame_number_to_display
             while (

@@ -1212,18 +1212,28 @@ class ModelsProcessor(QtCore.QObject):
                 return memory_used, memory_total_val
             return 0, 0
 
+    def _cuda_provider_options(self) -> Dict[str, Any]:
+        """Opt-in shared ORT stream for cloud sessions; native default is unchanged."""
+        options: Dict[str, Any] = {"device_id": self.gpu_id}
+        setting = os.environ.get("VISOMASTER_CUDA_UNIFIED_STREAM", "0")
+        if setting not in {"0", "1"}:
+            raise ValueError("VISOMASTER_CUDA_UNIFIED_STREAM must be 0 or 1")
+        if setting == "1":
+            options["use_ep_level_unified_stream"] = "1"
+        return options
+
     def _default_providers(self) -> list:
         """ONNX Runtime provider list matching this machine's best provider."""
         match platform_support.default_execution_provider():
             case "TensorRT" | "TensorRT-Engine":
                 return [
                     ("TensorrtExecutionProvider", self.trt_ep_options),
-                    ("CUDAExecutionProvider", {"device_id": self.gpu_id}),
+                    ("CUDAExecutionProvider", self._cuda_provider_options()),
                     ("CPUExecutionProvider"),
                 ]
             case "CUDA":
                 return [
-                    ("CUDAExecutionProvider", {"device_id": self.gpu_id}),
+                    ("CUDAExecutionProvider", self._cuda_provider_options()),
                     ("CPUExecutionProvider"),
                 ]
             case "CoreML":
@@ -1245,7 +1255,7 @@ class ModelsProcessor(QtCore.QObject):
                     raise RuntimeError("TensorRT is not installed.")
                 providers = [
                     ("TensorrtExecutionProvider", self.trt_ep_options),
-                    ("CUDAExecutionProvider", {"device_id": self.gpu_id}),
+                    ("CUDAExecutionProvider", self._cuda_provider_options()),
                     ("CPUExecutionProvider"),
                 ]
                 self.device = f"cuda:{self.gpu_id}"
@@ -1289,7 +1299,7 @@ class ModelsProcessor(QtCore.QObject):
                         "available on this machine."
                     )
                 providers = [
-                    ("CUDAExecutionProvider", {"device_id": self.gpu_id}),
+                    ("CUDAExecutionProvider", self._cuda_provider_options()),
                     ("CPUExecutionProvider"),
                 ]
                 self.device = f"cuda:{self.gpu_id}"
